@@ -16,7 +16,10 @@
 from oslo.concurrency import processutils
 
 from nova import exception
-from nova.i18n import _
+try :
+    from nova.i18n import _
+except ImportError, e :
+    from nova.openstack.common.gettextutils import _
 from nova.openstack.common import log
 from nova import utils
 

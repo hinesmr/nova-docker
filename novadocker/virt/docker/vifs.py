@@ -18,7 +18,8 @@
 from oslo.concurrency import processutils
 
 from nova import exception
-from nova.i18n import _
+#from nova.i18n import _
+from nova.openstack.common.gettextutils import _
 from nova.network import linux_net
 from nova.network import manager
 from nova.network import model as network_model
@@ -26,7 +27,9 @@ from nova.openstack.common import log as logging
 from nova import utils
 from novadocker.virt.docker import network
 from oslo.config import cfg
+from oslo.serialization import jsonutils
 import random
+import os.path
 
 # We need config opts from manager, but pep8 complains, this silences it.
 assert manager
@@ -37,7 +40,6 @@ CONF.import_opt('vlan_interface', 'nova.manager')
 CONF.import_opt('flat_interface', 'nova.manager')
 
 LOG = logging.getLogger(__name__)
-
 
 class DockerGenericVIFDriver(object):
 
@@ -186,15 +188,18 @@ class DockerGenericVIFDriver(object):
         pass
 
     def attach(self, instance, vif, container_id):
+	statefile = CONF.docker.libcontainer_directory + "/" + container_id + "/state.json"
+	statetmp = "/tmp/novalibcontainerstatetemp-" + container_id + ".json"
         vif_type = vif['type']
         if_remote_name = 'ns%s' % vif['id'][:11]
+        if_local_name = 'tap%s' % vif['id'][:11]
         gateway = network.find_gateway(instance, vif['network'])
         ip = network.find_fixed_ip(instance, vif['network'])
 
         LOG.debug('attach vif_type=%(vif_type)s instance=%(instance)s '
-                  'vif=%(vif)s',
+                  'vif=%(vif)s statefile=%(statefile)s',
                   {'vif_type': vif_type, 'instance': instance,
-                   'vif': vif})
+                   'vif': vif, 'statefile': statefile})
 
         try:
             utils.execute('ip', 'link', 'set', if_remote_name, 'netns',
@@ -208,5 +213,22 @@ class DockerGenericVIFDriver(object):
                 utils.execute('ip', 'netns', 'exec', container_id,
                               'ip', 'route', 'replace', 'default', 'via',
                               gateway, 'dev', if_remote_name, run_as_root=True)
+
+	    # Backup the libcontainer state file, in case we mess up.
+	    statefilebk = statefile + ".bak"
+
+	    if not os.path.isfile(statefilebk) :
+		utils.execute('cp', statefile, statefilebk, run_as_root=True)
+
+	    state = jsonutils.loads(utils.read_file_as_root(statefile))
+
+	    utils.execute('cp', statefile, statefilebk, run_as_root=True)
+
+	    if "veth_host" not in state["network_state"] :
+		state["network_state"]["veth_host"] = if_local_name
+		statefh = open(statetmp, 'w')
+		statefh.write(jsonutils.dumps(state))
+		statefh.close()
+		utils.execute('mv', '-f', statetmp, statefile, run_as_root=True)
         except Exception:
             LOG.exception("Failed to attach vif")

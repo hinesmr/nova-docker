@@ -33,7 +33,11 @@ from nova.compute import flavors
 from nova.compute import power_state
 from nova.compute import task_states
 from nova import exception
-from nova.i18n import _
+try :
+    from nova.i18n import _
+except ImportError, e :
+    from nova.openstack.common.gettextutils import _
+
 from nova.image import glance
 from nova.openstack.common import fileutils
 from nova.openstack.common import log
@@ -72,7 +76,18 @@ docker_opts = [
     cfg.StrOpt('snapshots_directory',
                default='$instances_path/snapshots',
                help='Location where docker driver will temporarily store '
-                    'snapshots.')
+                    'snapshots.'),
+
+    # Because we are connecting instances to neutron without docker's help,
+    # we need to update state.json and install "veth_host" into "network_state"
+    # so that libcontainer can return monitoring statistics for the network.
+    # Perhaps we can delete this in the future if Docker directly exposes a way
+    # to update libcontainer state information instead of bypassing docker
+    # like this....
+    cfg.StrOpt('libcontainer_directory',
+	       default='/var/lib/docker/execdriver/native',
+	       help='Location where libcontainer stores its state.json '
+		    ' and container.json files.')
 ]
 
 CONF.register_opts(docker_opts, 'docker')
@@ -296,8 +311,8 @@ class DockerDriver(driver.ComputeDriver):
             'hypervisor_hostname': self._nodename,
             'cpu_info': '?',
             'supported_instances': jsonutils.dumps([
-                ('i686', 'docker', 'lxc'),
-                ('x86_64', 'docker', 'lxc')
+                ('ppc64', 'docker', 'lxc'),
+                ('ppc64', 'docker', 'lxc')
             ])
         }
         return stats
