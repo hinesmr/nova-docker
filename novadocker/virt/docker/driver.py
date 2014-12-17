@@ -311,8 +311,7 @@ class DockerDriver(driver.ComputeDriver):
             'hypervisor_hostname': self._nodename,
             'cpu_info': '?',
             'supported_instances': jsonutils.dumps([
-                ('ppc64', 'docker', 'lxc'),
-                ('ppc64', 'docker', 'lxc')
+                ('x86_64', 'docker', 'exe')
             ])
         }
         return stats
