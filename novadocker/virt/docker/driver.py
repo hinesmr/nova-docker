@@ -375,7 +375,7 @@ class DockerDriver(driver.ComputeDriver):
         return self.docker.inspect_image(self._encode_utf8(image_meta['name']))
 
     def _start_container(self, container_id, instance, network_info=None):
-        self.docker.start(container_id)
+        self.docker.start(container_id, privileged = True)
         if not network_info:
             return
         try:
@@ -471,7 +471,7 @@ class DockerDriver(driver.ComputeDriver):
                         exc_info=True)
             return
 
-        self.docker.start(container_id)
+        self.docker.start(container_id, privileged = True)
         try:
             if network_info:
                 self.plug_vifs(instance, network_info)
@@ -485,7 +485,7 @@ class DockerDriver(driver.ComputeDriver):
         container_id = self._get_container_id(instance)
         if not container_id:
             return
-        self.docker.start(container_id)
+        self.docker.start(container_id, privileged = True)
         if not network_info:
             return
         try:
