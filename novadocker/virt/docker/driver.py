@@ -209,8 +209,8 @@ class DockerDriver(driver.ComputeDriver):
             'hypervisor_hostname': self._nodename,
             'cpu_info': '?',
             'supported_instances': jsonutils.dumps([
-                ('ppc64le', 'docker', 'exe'),
-                ('ppc64le', 'docker', 'exe')
+                ('ppc64', 'docker', 'exe'),
+                ('ppc64', 'docker', 'exe')
             ])
         }
         return stats
