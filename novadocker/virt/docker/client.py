@@ -153,7 +153,7 @@ class DockerHTTPClient(object):
             'Image': None,
             'Volumes': {},
             'VolumesFrom': '',
-	    'HostConfig' : {'Privileged' : True},
+	    #'HostConfig' : {'Privileged' : True},
         }
         data.update(args)
         resp = self.make_request(
