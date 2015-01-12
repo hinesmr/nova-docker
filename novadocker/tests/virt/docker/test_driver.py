@@ -17,6 +17,7 @@ import contextlib
 import socket
 
 import mock
+from oslo.config import fixture as config_fixture
 from oslo.serialization import jsonutils
 from oslo.utils import units
 
@@ -24,17 +25,19 @@ from nova.compute import task_states
 from nova import context
 from nova import exception
 from nova import test
-import nova.tests.image.fake
-from nova.tests import matchers
-from nova.tests import utils
-from nova.tests.virt.test_virt_drivers import _VirtDriverTestCase
+import nova.tests.unit.image.fake
+from nova.tests.unit import matchers
+from nova.tests.unit import utils
+from nova.tests.unit.virt import test_virt_drivers
 from novadocker.tests.virt.docker import mock_client
 import novadocker.virt.docker
+from novadocker.virt.docker import driver as docker_driver
 from novadocker.virt.docker import hostinfo
 from novadocker.virt.docker import network
 
 
-class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
+class DockerDriverTestCase(test_virt_drivers._VirtDriverTestCase,
+                           test.TestCase):
 
     driver_module = 'novadocker.virt.docker.DockerDriver'
 
@@ -68,6 +71,8 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
         self.context = context.RequestContext('fake_user', 'fake_project')
 
         self.connection.init_host(None)
+        self.fixture = self.useFixture(
+            config_fixture.Config(novadocker.virt.docker.driver.CONF))
 
     def test_driver_capabilities(self):
         self.assertFalse(self.connection.capabilities['has_imagecache'])
@@ -90,7 +95,9 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
                               network_info=network_info)
         return instance_ref, network_info
 
-    def test_get_host_stats(self):
+    @mock.patch.object(hostinfo, 'get_total_vcpus', return_value=1)
+    @mock.patch.object(hostinfo, 'get_vcpus_used', return_value=0)
+    def test_get_host_stats(self, mock_total, mock_used):
         memory = {
             'total': 4 * units.Mi,
             'used': 1 * units.Mi
@@ -119,11 +126,17 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
         }
         # create the mocks
         with contextlib.nested(
+            mock.patch.object(hostinfo, 'get_total_vcpus',
+                              return_value=1),
+            mock.patch.object(hostinfo, 'get_vcpus_used',
+                              return_value=0),
             mock.patch.object(hostinfo, 'get_memory_usage',
                               return_value=memory),
             mock.patch.object(hostinfo, 'get_disk_usage',
                               return_value=disk)
         ) as (
+            get_total_vcpus,
+            get_vcpus_used,
             get_memory_usage,
             get_disk_usage
         ):
@@ -153,7 +166,6 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
                               network_info=None):
         if instance_href is None:
             instance_href = utils.get_test_instance()
-        instance_href = utils.get_test_instance()
         if image_info is None:
             image_info = utils.get_test_image_info(None, instance_href)
             image_info['disk_format'] = 'raw'
@@ -170,7 +182,6 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
                                         network_info=None):
         if instance_href is None:
             instance_href = utils.get_test_instance()
-        instance_href = utils.get_test_instance()
         if image_info is None:
             image_info = utils.get_test_image_info(None, instance_href)
             image_info['disk_format'] = 'raw'
@@ -182,12 +193,31 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
             command = mc.call_args[1]['command']
             self.assertEqual(['sh'], command)
 
+    @mock.patch.object(novadocker.virt.docker.driver.DockerDriver,
+                       '_inject_key', return_value='/tmp/.ssh')
+    def test_create_container_inject_key(self, mock_inject_key):
+        self.fixture.config(inject_key=True, group='docker')
+        instance_href = utils.get_test_instance()
+        instance_href.key_data = 'my_key'
+        image_info = utils.get_test_image_info(None, instance_href)
+        image_info['disk_format'] = 'raw'
+        image_info['container_format'] = 'docker'
+        with mock.patch.object(self.mock_client, 'create_container'):
+            with mock.patch.object(self.mock_client, 'start') as ms:
+                self.connection.spawn(self.context, instance_href, image_info,
+                                      'fake_files', 'fake_password',
+                                      network_info=None)
+                command = ms.call_args[1]
+                expected = {'binds': {'/tmp/.ssh':
+                            {'bind': '/root/.ssh', 'ro': True}},
+                            'dns': None}
+                self.assertEqual(expected, command)
+
     def test_create_container_glance_cmd(self, image_info=None,
                                          instance_href=None,
                                          network_info=None):
         if instance_href is None:
             instance_href = utils.get_test_instance()
-        instance_href = utils.get_test_instance()
         if image_info is None:
             image_info = utils.get_test_image_info(None, instance_href)
             image_info['disk_format'] = 'raw'
@@ -228,7 +258,7 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
     def test_create_container_net_setup_fails(self, mock_plug_vifs):
         self.assertRaises(exception.InstanceDeployFailure,
                           self.test_create_container,
-                          network_info=mock.ANY)
+                          network_info=utils.get_test_network_info())
         self.assertEqual(0, len(self.mock_client.containers()))
 
     def test_create_container_wrong_image(self):
@@ -330,6 +360,14 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
             pid = driver._find_container_pid("fake_container_id")
             self.assertEqual(pid, '12345')
 
+    def test_get_console_output_with_no_container(self):
+        driver = novadocker.virt.docker.driver.DockerDriver(None)
+        with mock.patch.object(driver,
+                               "_get_container_id") as get_container_id:
+            get_container_id.return_value = None
+            logs = driver.get_console_output(None, None)
+            self.assertEqual('', logs)
+
     @mock.patch.object(novadocker.virt.docker.driver.DockerDriver,
                        '_find_container_by_name',
                        return_value={'id': 'fake_id'})
@@ -357,7 +395,7 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
         # cannot check that the images are correctly configured in the
         # fake image service, but we can ensuring naming and other
         # conventions are accurate.
-        image_service = nova.tests.image.fake.FakeImageService()
+        image_service = nova.tests.unit.image.fake.FakeImageService()
         recv_meta = image_service.create(context, sent_meta)
 
         with mock.patch.object(self.mock_client, 'load_image'):
@@ -391,3 +429,9 @@ class DockerDriverTestCase(_VirtDriverTestCase, test.TestCase):
                         return_value=(result, None)):
             uptime = self.connection.get_host_uptime(None)
             self.assertEqual(result, uptime)
+
+    def test_get_dns_entries(self):
+        driver = docker_driver.DockerDriver(object)
+        network_info = utils.get_test_network_info()
+        self.assertEqual(['0.0.0.0', '0.0.0.0'],
+                         driver._extract_dns_entries(network_info))
