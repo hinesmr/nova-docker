@@ -53,7 +53,7 @@ docker_opts = [
     cfg.StrOpt('snapshots_directory',
                default='$instances_path/snapshots',
                help='Location where docker driver will temporarily store '
-                    'snapshots.')
+                    'snapshots.'),
     # Because we are connecting instances to neutron without docker's help,
     # we need to update state.json and install "veth_host" into "network_state"
     # so that libcontainer can return monitoring statistics for the network.
