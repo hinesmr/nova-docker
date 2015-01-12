@@ -91,7 +91,7 @@ docker_opts = [
     cfg.StrOpt('libcontainer_directory',
 	       default='/var/lib/docker/execdriver/native',
 	       help='Location where libcontainer stores its state.json '
-		    ' and container.json files.')
+		    ' and container.json files.'),
     cfg.BoolOpt('inject_key',
                 default=False,
                 help='Inject the ssh public key at boot time'),
