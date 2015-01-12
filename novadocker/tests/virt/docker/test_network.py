@@ -15,13 +15,13 @@
 
 import uuid
 
-from oslo.concurrency import processutils
+from oslo_concurrency import processutils
 
 from nova import exception
 from nova import test
 from nova import utils
 
-from nova.tests import utils as test_utils
+from nova.tests.unit import utils as test_utils
 
 from novadocker.virt.docker import network
 
