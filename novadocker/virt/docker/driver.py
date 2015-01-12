@@ -19,6 +19,7 @@ A Docker Hypervisor which allows running Linux Containers instead of VMs.
 """
 
 import os
+import shutil
 import socket
 import time
 import uuid
@@ -34,9 +35,9 @@ from nova.compute import power_state
 from nova.compute import task_states
 from nova import exception
 try :
-    from nova.i18n import _
+    from nova.i18n import _, _LI, _LE
 except ImportError, e :
-    from nova.openstack.common.gettextutils import _
+    from nova.openstack.common.gettextutils import _, _LI, _LE
 
 from nova.image import glance
 from nova.openstack.common import fileutils
@@ -44,6 +45,7 @@ from nova.openstack.common import log
 from nova import utils
 from nova.virt import driver
 from nova.virt import firewall
+from nova.virt import hardware
 from nova.virt import images
 from novadocker.virt.docker import client as docker_client
 from novadocker.virt.docker import hostinfo
@@ -55,6 +57,9 @@ CONF.import_opt('my_ip', 'nova.netconf')
 CONF.import_opt('instances_path', 'nova.compute.manager')
 
 docker_opts = [
+    cfg.StrOpt('root_directory',
+               default='/var/lib/docker',
+               help='Path to use as the root of the Docker runtime.'),
     cfg.StrOpt('host_url',
                default='unix:///var/run/docker.sock',
                help='tcp://host:port to bind/connect to or '
@@ -77,7 +82,6 @@ docker_opts = [
                default='$instances_path/snapshots',
                help='Location where docker driver will temporarily store '
                     'snapshots.'),
-
     # Because we are connecting instances to neutron without docker's help,
     # we need to update state.json and install "veth_host" into "network_state"
     # so that libcontainer can return monitoring statistics for the network.
@@ -88,6 +92,9 @@ docker_opts = [
 	       default='/var/lib/docker/execdriver/native',
 	       help='Location where libcontainer stores its state.json '
 		    ' and container.json files.')
+    cfg.BoolOpt('inject_key',
+                default=False,
+                help='Inject the ssh public key at boot time'),
 ]
 
 CONF.register_opts(docker_opts, 'docker')
@@ -266,14 +273,14 @@ class DockerDriver(driver.ComputeDriver):
         #
         #                   Also see:
         #                    docker/docs/sources/articles/runmetrics.md
-        info = {
-            'max_mem': mem,
-            'mem': mem,
-            'num_cpu': num_cpu,
-            'cpu_time': 0
-        }
-        info['state'] = (power_state.RUNNING if running
-                         else power_state.SHUTDOWN)
+        info = hardware.InstanceInfo(
+            max_mem_kb=mem,
+            mem_kb=mem,
+            num_cpu=num_cpu,
+            cpu_time_ns=0,
+            state=(power_state.RUNNING if running
+                   else power_state.SHUTDOWN)
+        )
         return info
 
     def get_host_stats(self, refresh=False):
@@ -299,8 +306,8 @@ class DockerDriver(driver.ComputeDriver):
         memory = hostinfo.get_memory_usage()
         disk = hostinfo.get_disk_usage()
         stats = {
-            'vcpus': 1,
-            'vcpus_used': 0,
+            'vcpus': hostinfo.get_total_vcpus(),
+            'vcpus_used': hostinfo.get_vcpus_used(self.list_instances(True)),
             'memory_mb': memory['total'] / units.Mi,
             'memory_mb_used': memory['used'] / units.Mi,
             'local_gb': disk['total'] / units.Gi,
@@ -374,8 +381,31 @@ class DockerDriver(driver.ComputeDriver):
 
         return self.docker.inspect_image(self._encode_utf8(image_meta['name']))
 
+    def _extract_dns_entries(self, network_info):
+        dns = []
+        if network_info:
+            for net in network_info:
+                subnets = net['network'].get('subnets', [])
+                for subnet in subnets:
+                    dns_entries = subnet.get('dns', [])
+                    for dns_entry in dns_entries:
+                        if 'address' in dns_entry:
+                            dns.append(dns_entry['address'])
+        return dns if dns else None
+
+    def _get_key_binds(self, container_id, instance):
+        binds = None
+        # Handles the key injection.
+        if CONF.docker.inject_key and instance.get('key_data'):
+            key = str(instance['key_data'])
+            mount_origin = self._inject_key(container_id, key)
+            binds = {mount_origin: {'bind': '/root/.ssh', 'ro': True}}
+        return binds
+
     def _start_container(self, container_id, instance, network_info=None):
-        self.docker.start(container_id, privileged = True)
+        binds = self._get_key_binds(container_id, instance)
+        dns = self._extract_dns_entries(network_info)
+        self.docker.start(container_id, binds=binds, dns=dns, privileged = True)
         if not network_info:
             return
         try:
@@ -391,7 +421,8 @@ class DockerDriver(driver.ComputeDriver):
                                                   instance_id=instance['name'])
 
     def spawn(self, context, instance, image_meta, injected_files,
-              admin_password, network_info=None, block_device_info=None):
+              admin_password, network_info=None, block_device_info=None,
+              flavor=None):
         image_name = self._get_image_name(context, instance, image_meta)
         args = {
             'hostname': instance['name'],
@@ -417,6 +448,39 @@ class DockerDriver(driver.ComputeDriver):
                 instance_id=instance['name'])
 
         self._start_container(container_id, instance, network_info)
+
+    def _inject_key(self, id, key):
+        if isinstance(id, dict):
+            id = id.get('id')
+        sshdir = os.path.join(CONF.instances_path, id, '.ssh')
+        key_data = ''.join([
+            '\n',
+            '# The following ssh key was injected by Nova',
+            '\n',
+            key.strip(),
+            '\n',
+        ])
+        fileutils.ensure_tree(sshdir)
+        keys_file = os.path.join(sshdir, 'authorized_keys')
+        with open(keys_file, 'a') as f:
+            f.write(key_data)
+        os.chmod(sshdir, 0o700)
+        os.chmod(keys_file, 0o600)
+        return sshdir
+
+    def _cleanup_key(self, instance, id):
+        if isinstance(id, dict):
+            id = id.get('id')
+        dir = os.path.join(CONF.instances_path, id)
+        if os.path.exists(dir):
+            LOG.info(_LI('Deleting instance files %s'), dir,
+                     instance=instance)
+            try:
+                shutil.rmtree(dir)
+            except OSError as e:
+                LOG.error(_LE('Failed to cleanup directory %(target)s: '
+                              '%(e)s'), {'target': dir, 'e': e},
+                          instance=instance)
 
     def restore(self, instance):
         container_id = self._get_container_id(instance)
@@ -454,6 +518,8 @@ class DockerDriver(driver.ComputeDriver):
         self.docker.remove_container(container_id, force=True)
         network.teardown_network(container_id)
         self.unplug_vifs(instance, network_info)
+        if CONF.docker.inject_key:
+            self._cleanup_key(instance, container_id)
 
     def reboot(self, context, instance, network_info, reboot_type,
                block_device_info=None, bad_volumes_callback=None):
@@ -471,7 +537,9 @@ class DockerDriver(driver.ComputeDriver):
                         exc_info=True)
             return
 
-        self.docker.start(container_id, privileged = True)
+        binds = self._get_key_binds(container_id, instance)
+        dns = self._extract_dns_entries(network_info)
+        self.docker.start(container_id, binds=binds, dns=dns, privileged = True)
         try:
             if network_info:
                 self.plug_vifs(instance, network_info)
@@ -485,7 +553,9 @@ class DockerDriver(driver.ComputeDriver):
         container_id = self._get_container_id(instance)
         if not container_id:
             return
-        self.docker.start(container_id, privileged = True)
+        binds = self._get_key_binds(container_id, instance)
+        dns = self._extract_dns_entries(network_info)
+        self.docker.start(container_id, binds=binds, dns=dns, privileged = True)
         if not network_info:
             return
         try:
@@ -541,7 +611,7 @@ class DockerDriver(driver.ComputeDriver):
     def get_console_output(self, context, instance):
         container_id = self._get_container_id(instance)
         if not container_id:
-            return
+            return ''
         return self.docker.get_container_logs(container_id)
 
     def snapshot(self, context, instance, image_href, update_task_state):

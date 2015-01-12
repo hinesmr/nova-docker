@@ -15,9 +15,13 @@
 
 import os
 
+from oslo.config import cfg
+
+CONF = cfg.CONF
+
 
 def statvfs():
-    docker_path = '/var/lib/docker'
+    docker_path = CONF.docker.root_directory
     if not os.path.exists(docker_path):
         docker_path = '/'
     return os.statvfs(docker_path)
@@ -32,6 +36,27 @@ def get_disk_usage():
         'available': st.f_bavail * st.f_frsize,
         'used': (st.f_blocks - st.f_bfree) * st.f_frsize
     }
+
+
+def get_total_vcpus():
+    total_vcpus = 0
+
+    with open('/proc/cpuinfo') as f:
+        for ln in f.readlines():
+            if ln.startswith('processor'):
+                total_vcpus += 1
+
+    return total_vcpus
+
+
+def get_vcpus_used(containers):
+    total_vcpus_used = 0
+    for container in containers:
+        if isinstance(container, dict):
+            total_vcpus_used += container.get('Config', {}).get(
+                'CpuShares', 0) / 1024
+
+    return total_vcpus_used
 
 
 def get_memory_usage():
