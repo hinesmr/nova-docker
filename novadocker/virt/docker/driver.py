@@ -272,7 +272,7 @@ class DockerDriver(driver.ComputeDriver):
         if not container_id:
             return
 
-        self.docker.start_container(container_id, privileged = True)
+        self.docker.start_container(container_id)
         try:
             self.plug_vifs(instance, network_info)
             self._attach_vifs(instance, network_info)
@@ -357,7 +357,7 @@ class DockerDriver(driver.ComputeDriver):
             LOG.debug('Cannot destroy the container network during reboot')
             return
 
-        if not self.docker.start_container(container_id, privileged = True):
+        if not self.docker.start_container(container_id):
             LOG.warning(_('Cannot restart the container, '
                           'please check docker logs'))
             return
@@ -371,7 +371,7 @@ class DockerDriver(driver.ComputeDriver):
         container_id = self._find_container_by_name(instance['name']).get('id')
         if not container_id:
             return
-        self.docker.start_container(container_id, privileged = True)
+        self.docker.start_container(container_id)
         try:
             self.plug_vifs(instance, network_info)
             self._attach_vifs(instance, network_info)
