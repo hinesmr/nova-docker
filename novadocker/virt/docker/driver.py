@@ -54,6 +54,16 @@ docker_opts = [
                default='$instances_path/snapshots',
                help='Location where docker driver will temporarily store '
                     'snapshots.')
+    # Because we are connecting instances to neutron without docker's help,
+    # we need to update state.json and install "veth_host" into "network_state"
+    # so that libcontainer can return monitoring statistics for the network.
+    # Perhaps we can delete this in the future if Docker directly exposes a way
+    # to update libcontainer state information instead of bypassing docker
+    # like this....
+    cfg.StrOpt('libcontainer_directory',
+	       default='/var/lib/docker/execdriver/native',
+	       help='Location where libcontainer stores its state.json '
+		    ' and container.json files.')
 ]
 
 CONF.register_opts(docker_opts, 'docker')
@@ -199,8 +209,8 @@ class DockerDriver(driver.ComputeDriver):
             'hypervisor_hostname': self._nodename,
             'cpu_info': '?',
             'supported_instances': jsonutils.dumps([
-                ('i686', 'docker', 'lxc'),
-                ('x86_64', 'docker', 'lxc')
+                ('ppc64le', 'docker', 'exe'),
+                ('ppc64le', 'docker', 'exe')
             ])
         }
         return stats
@@ -262,7 +272,7 @@ class DockerDriver(driver.ComputeDriver):
         if not container_id:
             return
 
-        self.docker.start_container(container_id)
+        self.docker.start_container(container_id, privileged = True)
         try:
             self.plug_vifs(instance, network_info)
             self._attach_vifs(instance, network_info)
@@ -347,7 +357,7 @@ class DockerDriver(driver.ComputeDriver):
             LOG.debug('Cannot destroy the container network during reboot')
             return
 
-        if not self.docker.start_container(container_id):
+        if not self.docker.start_container(container_id, privileged = True):
             LOG.warning(_('Cannot restart the container, '
                           'please check docker logs'))
             return
@@ -361,7 +371,7 @@ class DockerDriver(driver.ComputeDriver):
         container_id = self._find_container_by_name(instance['name']).get('id')
         if not container_id:
             return
-        self.docker.start_container(container_id)
+        self.docker.start_container(container_id, privileged = True)
         try:
             self.plug_vifs(instance, network_info)
             self._attach_vifs(instance, network_info)
