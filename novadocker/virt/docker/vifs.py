@@ -25,7 +25,11 @@ from nova.openstack.common import processutils
 from nova import utils
 from novadocker.virt.docker import network
 from oslo.config import cfg
-from oslo.serialization import jsonutils
+try :
+    from oslo.serialization import jsonutils
+except ImportError :
+    from oslo.messaging.openstack.common import jsonutils 
+
 import random
 import os.path
 
